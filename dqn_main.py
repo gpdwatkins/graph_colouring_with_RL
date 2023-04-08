@@ -18,9 +18,9 @@ import pstats
 
 import wandb
 
-PROFILE = True
+PROFILE = False
 SAVE_OUTPUTS = True
-USE_WANDB = True
+USE_WANDB = False
 
 manual_seeds = [0]
 exp_names = ['exp0']
@@ -76,10 +76,6 @@ for manual_seed, exp_name, training_run_readme in zip(manual_seeds, exp_names, t
     len_global_features = len(example_global_features)
 
     agent = DQNAgentGN(len_node_features, len_edge_features, len_global_features, avg_deg=validation_dataset.avg_deg)
-    
-    if SAVE_OUTPUTS:
-        avg_deg_filepath = os.path.join(base_dir, 'avg_deg.pickle')
-        pickle.dump(agent.avg_deg, open(avg_deg_filepath, "wb" ))
 
     training_stats = namedtuple("Stats",["saved_episodes", "episode_rewards", "colours_used"])(
         saved_episodes=[],

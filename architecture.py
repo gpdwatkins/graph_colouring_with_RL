@@ -8,7 +8,7 @@ from torch_geometric.data import Data
 
 from principal_neighbourhood_aggregation import AGGREGATORS, SCALERS
 
-DEVICE = "cuda:7"
+DEVICE = "cuda:0"
 
 class MyGN(MessagePassing):
     def __init__(self, message_in_dim, message_out_dim, update_in_dim, update_out_dim, aggregators, scalers, avg_deg):
