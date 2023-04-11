@@ -149,9 +149,6 @@ class DQNAgentGN():
     def remember(self, data, current_global_features, assigned_vertices, action_ind, reward, next_data, next_global_features, done):
         self.memory.store_transition(data, current_global_features, assigned_vertices, action_ind, reward, next_data, next_global_features, done)
 
-    def expert_remember(self, data, current_global_features, assigned_vertices, action_ind, reward, next_data, next_global_features, done):
-        self.memory.store_transition_expert(data, current_global_features, assigned_vertices, action_ind, reward, next_data, next_global_features, done)
-
     def learn(self):
         
         if self.memory.current_mem_size < 10*self.batch_size:

@@ -20,7 +20,7 @@ import wandb
 
 PROFILE = False
 SAVE_OUTPUTS = True
-USE_WANDB = False
+USE_WANDB = True
 
 manual_seeds = [0]
 exp_names = ['exp0']

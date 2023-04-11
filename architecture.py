@@ -171,8 +171,13 @@ class GNNetwork(nn.Module):
 
         _, vertex_embeddings = self.gn_layer5(self.dummy_data)
 
+        print('vertex_embeddings.shape: ', vertex_embeddings.shape)
+
         global_features_repeated_for_vertices = global_features[vertex_batch_map]
         y = torch.cat((vertex_embeddings, global_features_repeated_for_vertices), dim=1)
+
+        print('y.shape: ', y.shape)
+        input('press enter')
 
         y = F.relu(self.fc1(y))
         y = F.relu(self.fc2(y))
