@@ -4,7 +4,7 @@ from copy import copy
 MAX_RADIUS_FOR_NEIGHBOURS = 3
 
 
-def save_stats_to_file(stats, filename):
+def save_training_stats_to_file(stats, filename):
     with open(filename, 'w') as file:
         file.write(','.join(np.array(stats.saved_episodes).astype(str)))
         file.write('\n')
