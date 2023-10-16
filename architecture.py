@@ -8,58 +8,69 @@ from torch_geometric.data import Data
 
 from principal_neighbourhood_aggregation import AGGREGATORS, SCALERS
 
-DEVICE = "cuda:0"
+DEVICE = "cuda:4"
 
-class MyGN(MessagePassing):
-    def __init__(self, message_in_dim, message_out_dim, update_in_dim, update_out_dim, aggregators, scalers, avg_deg):
-
-        super(MyGN, self).__init__(aggr=None)
+class GNNBlock(MessagePassing):
+    def __init__(self, message_in_dim, message_hidden_dim, message_out_dim, update_in_dim, update_hidden_dim, update_out_dim, aggregators, scalers):
+        """
+        Initialise a GNN block, consisting of message, aggregate and update functions.
+        Parameters
+        ==========
+            message_in_dim: Dimension of input to message function
+            message_hidden_dim: Dimension of hidden layer of message function
+            message_out_dim: Dimension of output from message function
+            update_in_dim: Dimension of input to update function
+            update_hidden_dim: Dimension of hidden layer of update function
+            update_out_dim: Dimension of output from update function
+            aggregators: aggregation functions to use in PNA
+            scalers: scalers to use in PNA
+        """
+        super(GNNBlock, self).__init__(aggr=None)
 
         self.aggregators = [AGGREGATORS[aggr] for aggr in aggregators]
         self.scalers = [SCALERS[scale] for scale in scalers]
-        self.avg_deg=avg_deg
-
-        msg_mlp_hidden_dim = 64
-        upd_mlp_hidden_dim = 64
         
+        # create message NN
         self.message_mlp = nn.Sequential(
-            nn.Linear(message_in_dim, msg_mlp_hidden_dim),
+            nn.Linear(message_in_dim, message_hidden_dim),
             nn.ReLU(),
-            nn.Linear(msg_mlp_hidden_dim, message_out_dim)
+            nn.Linear(message_hidden_dim, message_out_dim)
             )
 
+        # create update NN
         if not (update_in_dim is None or update_out_dim is None):
             self.update_mlp = nn.Sequential(
-                nn.Linear(update_in_dim, upd_mlp_hidden_dim),
+                nn.Linear(update_in_dim, update_hidden_dim),
                 nn.ReLU(),
-                nn.Linear(upd_mlp_hidden_dim, update_out_dim)
+                nn.Linear(update_hidden_dim, update_out_dim)
                 )
 
         self.device = torch.device(DEVICE if torch.cuda.is_available() else "cpu")
         self.to(self.device)
 
-    def message(self, x_j, x_i, edge_attr):
+    def message(self, x_i, x_j, edge_attr):
         # Message function takes in:
-        # - vertex features of the source vertex x_j
-        # - vertex features of the dest vertex x_i
-        # - edge features of e_ji
+        # - vertex features x_i of the source vertex i
+        # - vertex features x_j of the destination vertex j
+        # - edge features of e_ij
         # and outputs:
-        # - encoding of e_ji
-        message_nn_input = torch.cat([x_j, x_i, edge_attr], dim=1)
+        # - edge embedding of e_ij
+        message_nn_input = torch.cat([x_i, x_j, edge_attr], dim=1)
         message_nn_output = self.message_mlp(message_nn_input)
         return message_nn_output
 
-    def aggregate(self, inputs, index, edge_attr, dim_size=None):
-        outs = [aggr(inputs, index, dim_size) for aggr in self.aggregators]
+    def aggregate(self, inputs, index, edge_attr, dim_dim=None):
+        # uses PNA to aggregate embeddings of edges arriving at each vertex
+        outs = [aggr(inputs, index, dim_dim) for aggr in self.aggregators]
         out = torch.cat(outs, dim=-1)
         return out
 
     def update(self, aggr_out, x):
         # Update function takes in:
         # - Aggregation of edges arriving at vertex i
-        # - vertex features of vertex x_i
+        # - vertex features x_i of vertex i
         # and outputs:
-        # - vertex encoding of x_i
+        # - vertex embedding of i
         if type(x) is tuple:
             x=x[1]
         update_nn_input = torch.cat([aggr_out, x], dim=1)
@@ -67,7 +78,7 @@ class MyGN(MessagePassing):
         return update_nn_output
 
     def propagate(self, edge_index: Adj, size: Size = None, do_update_step=True, **kwargs):
-        """The initial call to start propagating messages."""
+        # propagate messages around the network
         size = self.__check_input__(edge_index, size)
 
         coll_dict = self.__collect__(self.__user_args__, edge_index, size, kwargs)
@@ -89,95 +100,103 @@ class MyGN(MessagePassing):
 
 
 class GNNetwork(nn.Module):
-    def __init__(self, vertex_features_size, edge_features_size, global_features_size, output_size, name, avg_degrees = None, alpha=None):
-        """Initialize parameters and build model.
-        Params
-        ======
-            observation_size (int): Dimension of each observation
-            action_size (int): Dimension of each action
-            seed (int): Random seed
-            fc1_units (int): Number of nodes in first hidden layer
-            fc2_units (int): Number of nodes in second hidden layer
+    def __init__(self, vertex_features_dim, edge_features_dim, global_features_dim, name, alpha):
+        """
+        Initialise network, consisting of 5 GNN blocks followed by 3 fully-connected layers.
+        Parameters
+        ==========
+            vertex_features_dim: Dimension of the vertex features
+            edge_features_dim: Dimension of the edge features
+            global_features_dim: Dimension of the graph-level features
+            name: Identifier for the network
+            alpha: Learning rate
         """
         super(GNNetwork, self).__init__()
 
         self.name = name
 
-        msg_output_size = 64
-        upd_output_size = 64
-
+        # aggregators/scalers for PNA
         aggregators = ['mean', 'min', 'max', 'std']
         scalers = ['identity']
-
-        gn1_msg_input_size = 2*vertex_features_size + edge_features_size
-        gn1_msg_output_size = msg_output_size
-        gn1_upd_input_size = len(aggregators) * len(scalers) * gn1_msg_output_size + vertex_features_size
-        gn1_upd_output_size = upd_output_size
         
-        gn2_msg_input_size = 2*gn1_upd_output_size + gn1_msg_output_size
-        gn2_msg_output_size = msg_output_size
-        gn2_upd_input_size = len(aggregators) * len(scalers) * gn2_msg_output_size + gn1_upd_output_size
-        gn2_upd_output_size = upd_output_size
-
-        gn3_msg_input_size = 2*gn2_upd_output_size + gn2_msg_output_size
-        gn3_msg_output_size = msg_output_size
-        gn3_upd_input_size = len(aggregators) * len(scalers) * gn3_msg_output_size + gn2_upd_output_size
-        gn3_upd_output_size = upd_output_size
-
-        gn4_msg_input_size = 2*gn3_upd_output_size + gn3_msg_output_size
-        gn4_msg_output_size = msg_output_size
-        gn4_upd_input_size = len(aggregators) * len(scalers) * gn4_msg_output_size + gn3_upd_output_size
-        gn4_upd_output_size = upd_output_size
-
-        gn5_msg_input_size = 2*gn4_upd_output_size + gn4_msg_output_size
-        gn5_msg_output_size = msg_output_size
-        gn5_upd_input_size = len(aggregators) * len(scalers) * gn5_msg_output_size + gn4_upd_output_size
-        gn5_upd_output_size = upd_output_size
-
+        # Set dimensions of the network
+        msg_hidden_dim = 64
+        upd_hidden_dim = 64
+        msg_output_dim = 64
+        upd_output_dim = 64
         fc1_units=64
         fc2_units=64
+        actions_per_vertex = 1
 
-        # In first GN layer, the input to update is a concatenation of:
-        # - Aggregated message output
-        # - original vertex feature
-        # In second GN layer, the input to update is a concatenation of:
-        # - Aggregated message output
-        # - vertex embedding from first GN layer
+        # Calculate further dimensions of the network
+        gn1_msg_input_dim = 2*vertex_features_dim + edge_features_dim
+        gn1_msg_output_dim = msg_output_dim
+        gn1_upd_input_dim = len(aggregators) * len(scalers) * gn1_msg_output_dim + vertex_features_dim
+        gn1_upd_output_dim = upd_output_dim
         
-        self.gn_layer1 = MyGN(gn1_msg_input_size, gn1_msg_output_size, gn1_upd_input_size, gn1_upd_output_size, aggregators, scalers, avg_deg=avg_degrees)
-        self.gn_layer2 = MyGN(gn2_msg_input_size, gn2_msg_output_size, gn2_upd_input_size, gn2_upd_output_size, aggregators, scalers, avg_deg=avg_degrees)
-        self.gn_layer3 = MyGN(gn3_msg_input_size, gn3_msg_output_size, gn3_upd_input_size, gn3_upd_output_size, aggregators, scalers, avg_deg=avg_degrees)
-        self.gn_layer4 = MyGN(gn4_msg_input_size, gn4_msg_output_size, gn4_upd_input_size, gn4_upd_output_size, aggregators, scalers, avg_deg=avg_degrees)
-        self.gn_layer5 = MyGN(gn5_msg_input_size, gn5_msg_output_size, gn5_upd_input_size, gn5_upd_output_size, aggregators, scalers, avg_deg=avg_degrees)
+        gn2_msg_input_dim = 2*gn1_upd_output_dim + gn1_msg_output_dim
+        gn2_msg_output_dim = msg_output_dim
+        gn2_upd_input_dim = len(aggregators) * len(scalers) * gn2_msg_output_dim + gn1_upd_output_dim
+        gn2_upd_output_dim = upd_output_dim
 
-        self.fc1 = nn.Linear(gn5_upd_output_size+global_features_size, fc1_units)
+        gn3_msg_input_dim = 2*gn2_upd_output_dim + gn2_msg_output_dim
+        gn3_msg_output_dim = msg_output_dim
+        gn3_upd_input_dim = len(aggregators) * len(scalers) * gn3_msg_output_dim + gn2_upd_output_dim
+        gn3_upd_output_dim = upd_output_dim
+
+        gn4_msg_input_dim = 2*gn3_upd_output_dim + gn3_msg_output_dim
+        gn4_msg_output_dim = msg_output_dim
+        gn4_upd_input_dim = len(aggregators) * len(scalers) * gn4_msg_output_dim + gn3_upd_output_dim
+        gn4_upd_output_dim = upd_output_dim
+
+        gn5_msg_input_dim = 2*gn4_upd_output_dim + gn4_msg_output_dim
+        gn5_msg_output_dim = msg_output_dim
+        gn5_upd_input_dim = len(aggregators) * len(scalers) * gn5_msg_output_dim + gn4_upd_output_dim
+        gn5_upd_output_dim = upd_output_dim
+        
+        # Initialise the GNN blocks
+        self.gn_layer1 = GNNBlock(gn1_msg_input_dim, msg_hidden_dim, gn1_msg_output_dim, gn1_upd_input_dim, upd_hidden_dim, gn1_upd_output_dim, aggregators, scalers)
+        self.gn_layer2 = GNNBlock(gn2_msg_input_dim, msg_hidden_dim, gn2_msg_output_dim, gn2_upd_input_dim, upd_hidden_dim, gn2_upd_output_dim, aggregators, scalers)
+        self.gn_layer3 = GNNBlock(gn3_msg_input_dim, msg_hidden_dim, gn3_msg_output_dim, gn3_upd_input_dim, upd_hidden_dim, gn3_upd_output_dim, aggregators, scalers)
+        self.gn_layer4 = GNNBlock(gn4_msg_input_dim, msg_hidden_dim, gn4_msg_output_dim, gn4_upd_input_dim, upd_hidden_dim, gn4_upd_output_dim, aggregators, scalers)
+        self.gn_layer5 = GNNBlock(gn5_msg_input_dim, msg_hidden_dim, gn5_msg_output_dim, gn5_upd_input_dim, upd_hidden_dim, gn5_upd_output_dim, aggregators, scalers)
+
+        # Initialise the fully-connected layers
+        self.fc1 = nn.Linear(gn5_upd_output_dim+global_features_dim, fc1_units)
         self.fc2 = nn.Linear(fc1_units, fc2_units)
-        self.fc3 = nn.Linear(fc2_units, output_size)
+        self.fc3 = nn.Linear(fc2_units, actions_per_vertex)
 
+        # Create dummy Data object to avoid in-place modification
         self.dummy_data = Data(x=torch.tensor([]), edge_index = torch.tensor([], dtype=torch.long), edge_attr = torch.tensor([]))
 
-        if not alpha is None:
-            self.optimizer = torch.optim.Adam(self.parameters(), lr=alpha)
-
+        # Initialise Adam optimizer
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=alpha)
+        
+        # Move network to GPU if available
         self.device = torch.device(DEVICE if torch.cuda.is_available() else "cpu")
         self.to(self.device)
 
     def forward(self, data, global_features, vertex_batch_map, edge_batch_map, called_by=None):
+        
+        # First pass the data through the GNN blocks and save outputs in dummy_data
         self.dummy_data.edge_index = data.edge_index
         self.dummy_data.edge_attr, self.dummy_data.x = self.gn_layer1(data)
         self.dummy_data.edge_attr, self.dummy_data.x = self.gn_layer2(self.dummy_data)
         self.dummy_data.edge_attr, self.dummy_data.x = self.gn_layer3(self.dummy_data)
         self.dummy_data.edge_attr, self.dummy_data.x = self.gn_layer4(self.dummy_data)
-
         _, vertex_embeddings = self.gn_layer5(self.dummy_data)
 
+        # Concatenate the vertex embeddings with global features  and save as y
+        # Note that if there are no global features, y is equal to vertex_embeddings
         global_features_repeated_for_vertices = global_features[vertex_batch_map]
         y = torch.cat((vertex_embeddings, global_features_repeated_for_vertices), dim=1)
 
+        # Pass y through the fully-connected layers
         y = F.relu(self.fc1(y))
         y = F.relu(self.fc2(y))
-        y = self.fc3(y)
-        return vertex_embeddings, y
+        q_values = self.fc3(y)
+
+        return vertex_embeddings, q_values
 
     def save_checkpoint(self, checkpoint_filepath_root):
         print('... saving checkpoint ...')

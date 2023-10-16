@@ -55,7 +55,7 @@ class MyGraphData(Data):
             return super().__inc__(key, value, *args, **kwargs)
         
 
-def save_stats_to_file(stats, filename):
+def save_training_stats_to_file(stats, filename):
     with open(filename, 'w') as file:
         file.write(','.join(np.array(stats.saved_episodes).astype(str)))
         file.write('\n')
